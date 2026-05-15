@@ -83,10 +83,6 @@ This is the core safety property of the pipeline. Every script can be re-run wit
 | `05_dq_checks.sql` | Three live DQ assertions (lag, null-price %, dedup) |
 | `sample_output.csv` | A 5-row sample of decoded LFJ V1 swaps for inspection (full output is produced by running the pipeline) |
 
-## A note on the Dune API choice
-
-The prototype creates a transient saved query via `POST /v1/query` and executes it via `POST /v1/query/{id}/execute`. This requires the **"query create"** scope on the API key (free tier supports it). Dune also exposes `POST /v1/sql/execute` for direct SQL execution without saving a query — for production we'd switch to that endpoint to avoid scope surface and the per-API-key saved-query quota. Documented as a small follow-up in `design/03_tradeoffs_and_next_steps.md`.
-
 ## Why DuckDB and not Postgres
 
 Reviewer ergonomics. DuckDB is a single-file, zero-install warehouse that accepts essentially all the Postgres DDL we'd use in production. The schema and queries in this prototype are written to be Postgres-compatible — when wired into production, the same files run against RDS without modification.

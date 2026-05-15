@@ -76,13 +76,13 @@ USD is enriched at trade time using two tiers:
 
 `amount_usd` is allowed to be NULL when no price is available within 15 minutes. The DQ pipeline alerts when null-price % crosses 20% in any (hour, project) cell — that's a feed issue, not a correctness issue.
 
-### 1.5 Stated assumptions
+### 1.5 Assumptions
 
-- Avalanche **C-Chain only**. P-Chain has no DEXes; X-Chain is asset-only.
-- Avalanche L1s (formerly Subnets) are out of scope for v1; the architecture extends to them by adding new ingestion sources.
-- On-chain DEX swaps only. CEX deposits/withdrawals, OTC, RFQ, and bridge net flows are tracked elsewhere.
-- Failed transactions excluded (EVM reverts roll back logs).
-- Callback-pattern attacks (malicious tokens emitting fake `Swap`-shaped logs) mitigated by filtering log emitters to a curated `factory_allowlist`.
+- **C-Chain only.** P-Chain has no DEXes; X-Chain is asset-only.
+- **Avalanche L1s (Subnets) out of scope for v1.** Architecture extends by adding new ingestion sources.
+- **On-chain DEX swaps only.** CEX, OTC, RFQ, and bridges tracked elsewhere.
+- **Failed transactions excluded** (EVM reverts roll back logs).
+- **Callback-pattern attacks mitigated** by filtering log emitters to a curated `factory_allowlist`.
 
 ---
 
@@ -339,23 +339,19 @@ This uses the same idempotency property as everywhere else. No special-case reco
 
 ### 4.4 The control plane
 
-The control plane is a set of small tables in the `control` schema that record, for every number the warehouse produces, the conditions under which it was produced. Without this, every disagreement about a number becomes archaeology.
+Seven small tables in a `control` schema record the conditions under which every number was produced. Without this, every disagreement about a number becomes archaeology.
 
-| Table | What it records | Read by |
-|---|---|---|
-| `pipeline_runs` | DAG run id, start/end, rows in/out per task, status | Reviewers diagnosing a bad number; SLA dashboards |
-| `source_freshness` | Per source: last successful pull, lag, error count last 24h | DQ checks; status page |
-| `decoder_versions` | Active `decoder_version` per `(project, version)`; deployment timestamp | Decoder-scoped re-derive flow |
-| `backfill_state` | Window, requested by, started, completed, rows rewritten, drift before/after | Audit trail for corrected numbers |
-| `reconciliation_drift` | Per (project, token_pair, hour): drift vs Dune, drift vs DeFiLlama | Dashboards expose this as a confidence band |
-| `dq_check_results` | Every DQ assertion last 7 days: passed/failed, threshold | DQ dashboard |
-| `metric_versions` | Each exposed metric: SQL hash, schema, owner, last changed | Board-grade reproducibility |
+| Table | What it records |
+|---|---|
+| `pipeline_runs` | DAG run id, start/end, rows in/out per task, status |
+| `source_freshness` | Per source: last successful pull, lag, error count last 24h |
+| `decoder_versions` | Active `decoder_version` per `(project, version)`; deployment timestamp |
+| `backfill_state` | Window, requested by, started, completed, rows rewritten, drift before/after |
+| `reconciliation_drift` | Per (project, token_pair, hour): drift vs Dune, drift vs DeFiLlama |
+| `dq_check_results` | Every DQ assertion last 7 days: passed/failed, threshold |
+| `metric_versions` | Each exposed metric: SQL hash, schema, owner, last changed |
 
-The control plane answers questions like:
-
-- *"Was the AVAX/USDC number on May 12 trustworthy?"* → `pipeline_runs` (clean run?), `dq_check_results` (all green?), `reconciliation_drift` (within 0.5%?), `decoder_versions` (no decoder bumped since?).
-- *"This number changed — why?"* → `backfill_state` (window rewritten?), `decoder_versions` (decoder bumped?), `metric_versions` (definition changed?).
-- *"Can I trust the real-time number right now?"* → `source_freshness` (lag), `dq_check_results` (recent failures).
+These answer questions like *"was yesterday's AVAX/USDC number trustworthy?"* (check `pipeline_runs` clean, `dq_check_results` green, `reconciliation_drift` within 0.5%) or *"why did this number change?"* (check `backfill_state` and `decoder_versions`).
 
 ---
 
@@ -385,12 +381,10 @@ A lagging pipeline is annoying. A double-counted dashboard is a bad treasury dec
 Three layers, increasing in cost:
 
 1. **Schema/contract tests** — dbt schema tests + pydantic validators on every ingestion. Caught at CI. Free.
-2. **Live DQ checks** — SQL assertions run inside the DAG after every materialization. Failure halts the DAG and pages. Cheap.
-3. **Reconciliation against external ground truth** — nightly comparison of our totals vs Dune `dex.trades`. Most expensive, most informative.
+2. **Live DQ checks** — SQL assertions inside the DAG after every materialization. Failure halts and pages. Cheap.
+3. **Reconciliation vs external ground truth** — nightly comparison against Dune `dex.trades`. Most expensive, most informative.
 
-### 5.2 Live DQ checks
-
-The prototype ships three. The design specifies fifteen.
+### 5.2 Live DQ checks (prototype ships three; design specifies fifteen)
 
 ```sql
 -- 1. Ingestion lag
@@ -438,7 +432,7 @@ FROM user_volume, non_internal_pool_volume;
 
 ### 5.2.1 Business-plausibility checks
 
-Schema-shape DQ catches broken pipelines. Business-plausibility DQ catches broken numbers from pipelines that look fine. Both classes must exist.
+Schema DQ catches broken pipelines. Business-plausibility DQ catches broken numbers from pipelines that look fine. Both are needed.
 
 ```sql
 -- 6. Protocol disappearance: a protocol with >$1M/day median over the last 7 days
@@ -498,7 +492,7 @@ The first two are wired into the DQ pipeline. The last two are runbook tools.
 
 ## 6. Consumption Layer
 
-Different users need different surfaces. Treating them the same produces a layer no one is happy with.
+Different users need different surfaces.
 
 ### 6.1 Persona-driven surfaces
 
@@ -518,11 +512,11 @@ Cube/Hasura between the warehouse and dashboards does two things:
 
 ### 6.3 Self-service vs governed
 
-The Treasury team is small, so the bar for self-service is high — analysts should answer their own questions without engineer time. The bar for governed (board reports) is also high — those numbers need provenance, version-locked SQL, and audit trails. The semantic layer handles both: a Cube-versioned model is the contract, and a board-grade metric means "this metric was version-pinned on date X."
+The team is small, so self-service has to work — analysts should answer their own questions without engineer time. Board reports need provenance, version-locked SQL, and audit trails. The semantic layer handles both: a Cube-versioned model is the contract, a board-grade metric means "this metric was version-pinned on date X."
 
 ### 6.4 Decision surfaces
 
-Personas describe who reads the data. **Decision surfaces** describe what the team is deciding when they read it. Each surface combines a small number of metrics from the contract and surfaces control-plane confidence signals next to them.
+Personas describe who reads the data. Decision surfaces describe what the team is deciding when they read it. Each surface combines a small number of metrics and surfaces control-plane confidence signals alongside them.
 
 | Decision | Surface | Metrics |
 |---|---|---|

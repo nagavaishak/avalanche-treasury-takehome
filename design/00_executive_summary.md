@@ -63,13 +63,7 @@ Total moving parts: one streaming source, one Python worker, one Postgres, one d
 
 The narrowing is deliberate. The assignment prefers a practical opinionated submission. A working prototype on three pools with a clear design for the rest is more honest than a half-finished implementation across six.
 
-## What I'd build first with more time
-
-1. **Aggregator-event decoding for LFJ Aggregator, Paraswap, 1inch.** Without this, aggregator-routed trades fall to medium-confidence pool-swap-collapse instead of high-confidence direct attribution.
-2. **Reconciliation suite against Dune `dex.trades`.** Daily comparison per (project, token_pair, hour); drift > 0.5% pages.
-3. **Real-time path in production.** Design is complete; turning it on is ~1 week including alerting.
-4. **`prices_dex` long-tail price model.** VWAP across top 3 pools per token, with a confidence band.
-5. **Part 2 (PromoteIt) MVP.** Spec parser + one template + PR generator.
+Full priority list of what to build next is in `03_tradeoffs_and_next_steps.md`.
 
 ## Operating numbers
 
