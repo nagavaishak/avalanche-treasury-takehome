@@ -51,14 +51,11 @@ The prototype is a deliberately narrow vertical slice on **three LFJ V1 pools** 
 │       ├── realtime_architecture.md
 │       ├── data_model.md
 │       └── productionization_workflow.md
-├── prototype/                            ← working batch pipeline on 3 LFJ pools
-│   ├── 01_ingest_dune.py
-│   ├── 02_decode.py
-│   ├── 03_enrich_usd.py
-│   ├── 04_load.py
-│   ├── 05_dq_checks.sql
-│   ├── schema.sql
-│   └── sample_output.csv
+├── prototype/                            ← code snippets + schema + DQ checks
+│   ├── pipeline_snippets.py             ← ingest → decode → enrich → UPSERT patterns
+│   ├── schema.sql                       ← Postgres / DuckDB DDL
+│   ├── 05_dq_checks.sql                 ← three live DQ checks
+│   └── sample_output.csv                ← 5 rows of decoded LFJ V1 swaps
 └── part2_workflow/                       ← PromoteIt example artifacts
     ├── pipeline_spec.example.yaml
     ├── templates/airflow_dag_template.py.j2
