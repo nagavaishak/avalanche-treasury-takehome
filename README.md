@@ -32,7 +32,7 @@ Two pipelines that answer *"how much of token A was exchanged for token B betwee
 | Control plane + reconciliation against Dune | Designed |
 | Part 2 (PromoteIt) | Designed + example artifacts |
 
-The prototype is a deliberately narrow vertical slice on **three LFJ V1 pools** for one day. The assignment prefers depth over breadth; a narrow honest prototype with a complete design is the right shape.
+The prototype covers **three LFJ V1 pools** for one day. The assignment says to prefer depth over breadth, so I built one path end-to-end and designed the rest.
 
 ---
 
@@ -57,9 +57,11 @@ The prototype is a deliberately narrow vertical slice on **three LFJ V1 pools** 
 │   ├── 05_dq_checks.sql                 ← three live DQ checks
 │   └── sample_output.csv                ← 5 rows of decoded LFJ V1 swaps
 └── part2_workflow/                       ← PromoteIt example artifacts
-    ├── pipeline_spec.example.yaml
-    ├── templates/airflow_dag_template.py.j2
-    └── promotion_checklist.md
+    ├── pipeline_spec.example.yaml       ← example metadata contract
+    ├── templates/airflow_dag_template.py.j2  ← Jinja2 production template
+    ├── prompts/                         ← LLM prompts (template mapping + utility match)
+    ├── examples/sample_pr_description.md ← what PromoteIt generates
+    └── promotion_checklist.md           ← human review gates
 ```
 
 **Suggested reading order:** executive summary → Part 1 design → skim prototype → Part 2 design → tradeoffs.
@@ -76,4 +78,4 @@ The prototype is a deliberately narrow vertical slice on **three LFJ V1 pools** 
 
 ## AI usage
 
-Used Claude as a thought partner to pressure-test the metric definition, enumerate edge cases (fee-on-transfer, rebasing, callback-pattern attacks), and sanity-check the Avalanche finality model. The design conclusions and architecture choices are mine.
+Used Claude as a thought partner — to challenge my metric definitions, enumerate edge cases I might have missed, and sanity-check the Avalanche finality model. The architecture choices are mine and I can defend them.
