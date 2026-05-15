@@ -99,21 +99,9 @@ USD is enriched at trade time using a two-tier source policy:
 | **QuickNode Streams** | Webhook / push | Sub-second | Full backfill | Medium | Per-payload pricing | Equivalent alternative to Goldsky; pick one based on existing vendor relationships. |
 | **Self-hosted AvalancheGo + `eth_subscribe`** | Streaming | Lowest possible | Archive node ~5 TB | None | $500–$2000/mo infra + ops | The no-vendor-lock-in option. Documented as the fallback; not chosen for v1 because the ops burden isn't justified at our SLO. |
 
-### 2.2 Tradeoff reasoning
+### 2.2 Source redundancy
 
-Four dimensions matter:
-
-- **Source reliability:** Dune indexes from full-archive nodes with retry/replay; Goldsky operates managed Avalanche infra and exposes a status page; self-hosting puts reliability entirely on us. Dune + Goldsky both meet "good-enough" for a treasury system; self-hosting is what you do *after* either of them fails you twice.
-- **Latency / freshness:** Dune is the bottleneck for batch (~hours). Goldsky / QuickNode meet our minutes-of-lag SLO for real-time. Self-hosting beats both, but the freshness gain over Goldsky is not consequential at our SLO.
-- **Historical completeness:** Dune has Avalanche from genesis. Goldsky offers historical replay. Both are fine.
-- **Vendor lock-in:** the doc names two interchangeable real-time vendors precisely so this is not a one-vendor risk. The batch SQL is also portable — every query in the prototype runs on Dune, BigQuery, or a self-hosted Postgres warehouse with at most syntax tweaks.
-
-The pipeline is therefore **two-source-redundant by design**:
-
-- Batch: Dune (primary) + BigQuery (reconciliation) + Allium (escalation)
-- Real-time: Goldsky (primary) + self-hosted node (cold-standby)
-
-A failure of any single vendor degrades freshness but does not stop the system.
+The pipeline is **two-source-redundant by design**: Batch uses Dune (primary) + BigQuery (reconciliation); Real-time uses Goldsky (primary) + self-hosted node (cold-standby). A failure of any single vendor degrades freshness but does not stop the system. Two interchangeable real-time vendors means no single-vendor lock-in risk; the batch SQL is portable across Dune, BigQuery, and self-hosted Postgres.
 
 ---
 
@@ -289,11 +277,7 @@ See `diagrams/batch_architecture.md` for the diagram.
 - **Serving.** Two paths — see §6.
 - **Observability.** CloudWatch metrics on every task (duration, rows-emitted, null-price-%); CloudWatch alarms wired to PagerDuty. dbt test results in `dbt_artifacts` table, queryable in dashboards.
 
-**Why this and not the obvious "Python ETL on EC2" answer:**
-
-- dbt is the right transformation tool because the work is fundamentally SQL-on-SQL. Pythonizing it adds maintenance overhead without buying anything.
-- MWAA over self-hosted Airflow because operational burden of self-hosted Airflow is famously larger than what it appears.
-- RDS Multi-AZ because the team is small and Treasury data freshness is a continuity concern; failover is automatic.
+**Key choices:** dbt over Python ETL (the work is SQL-on-SQL; Pythonizing adds maintenance without buying anything). MWAA over self-hosted Airflow (ops burden of self-hosted Airflow exceeds what it appears). RDS Multi-AZ for automatic failover.
 
 **Failure modes covered:**
 
@@ -383,82 +367,16 @@ The control plane is what separates an analyst-facing data warehouse from a Trea
 
 ---
 
-## 4.5 Operational behavior under failure
+## 4.5 Idempotency contract and failure recovery
 
-The happy path is the easy part. What follows is what actually happens when something breaks at 2am.
+Every write path satisfies: **re-running the same window produces the same final state.**
 
-### Idempotency contract
+- S3 partitioned writes (`dt=YYYY-MM-DD/hour=HH`) are atomic per object — re-runs overwrite cleanly.
+- `dex_pool_swaps` uses `ON CONFLICT (chain_id, tx_hash, log_index) DO UPDATE WHERE excluded.decoder_version >= current.decoder_version` — same-version re-runs are no-ops; bumped decoder versions are correction-safe overwrites.
+- Real-time worker marks `processed_at` in the same transaction as the UPSERT — crash mid-batch rolls back both; next tick re-processes the same rows.
+- Failed decoder logs go to `raw_logs_quarantine` with `error_reason`; DAG never crashes on undecodable logs.
 
-Every write path satisfies: **re-running the same window produces the same final state.** Concretely:
-
-- Ingestion writes parquet to S3 partitioned by `dt=YYYY-MM-DD/hour=HH`. Re-running an hour overwrites the partition (S3 PUT is atomic per object).
-- Decoder writes to `dex_pool_swaps` using `INSERT ... ON CONFLICT (chain_id, tx_hash, log_index) DO UPDATE SET ... WHERE excluded.decoder_version >= dex_pool_swaps.decoder_version`. Re-running with identical rows is a no-op; re-running with a bumped `decoder_version` is a correction-safe overwrite; older decoder_versions never clobber newer ones (protects against partial backfills racing live ingestion).
-- dbt-incremental models use `unique_key=(chain_id, tx_hash, log_index)` with `merge` strategy. Re-running an `--full-refresh` rebuilds from S3 raw.
-- The real-time worker marks `processed_at` on each row of `raw_realtime.logs` in the same transaction as the write to `dex_pool_swaps` (see §4.2). A crash mid-batch rolls back both; the next tick re-selects the same `processed_at IS NULL` rows and the idempotent UPSERT absorbs any redundant write.
-
-This contract is what makes every other failure recovery boring.
-
-### Replay and backfill
-
-Two replay modes:
-
-- **Window replay** (the common case — "re-derive yesterday"): `airflow dags backfill capital_flow_batch --start-date 2026-05-12 --end-date 2026-05-12`. The DAG re-pulls Dune for the window, overwrites the S3 partition, dbt re-merges. Total runtime ~30 minutes for one day; no analyst intervention needed.
-- **Decoder-scoped replay** (after a decoder bug fix): bump `decoder_version` in the decoder, then `DELETE FROM dex_pool_swaps WHERE project = $1 AND decoder_version < $2 AND block_time BETWEEN $3 AND $4`, then run the DAG for that window. Only the affected rows get rewritten. The `decoder_version` column makes scoped re-derives a one-line filter, not a full-table rebuild.
-
-Backfill runs target a read replica where possible and use a separate Airflow pool (concurrency=2) so they cannot starve the live hourly DAG.
-
-### Dead-letter handling
-
-When a log fails to decode (unknown topic0, unexpected number of bytes, ABI mismatch), the worker writes it to `raw_logs_quarantine` with the original log payload plus an `error_reason` string. The DAG never crashes on undecodable logs — it quarantines and continues.
-
-A DQ check pages if the quarantine rate exceeds **0.5% of total logs in any hour**. Below that threshold it's typically a new DEX deploying with a topic0 we haven't seen yet, and gets triaged on a weekly cadence rather than a pager.
-
-### Upstream outage
-
-| Outage | What happens | Recovery |
-|---|---|---|
-| **Dune API down for <2h** | Airflow task retries with exponential backoff (60s → 8min over 6 attempts). DAG completes within SLA. | Automatic; no action. |
-| **Dune API down for 2–24h** | Task fails after retries; pages on-call. Real-time path continues operating independently. | On-call confirms Dune status, re-runs DAG when API recovers. Next day's window naturally re-pulls the gap (DAG always pulls a rolling 48h slice). |
-| **Goldsky Mirror lag spikes** | Real-time watermark falls behind; lag DQ check fires at 5min lag. | Goldsky has its own retry; if not recovered in 15min, on-call promotes a self-hosted node fallback (documented but warm-spare, not hot). |
-| **Postgres failover (RDS Multi-AZ)** | Worker and DAG retry on connection error. RDS failover is ~60–120s. | Automatic; brief lag spike absorbed by retries. |
-| **Pricing source (Coinpaprika) stale** | `amount_usd` rows land as NULL. Null-price DQ check fires at 20% threshold. | A `backfill_prices` nightly job re-runs the price join for any `amount_usd IS NULL` rows in the last 7 days. No row is permanently un-priced unless the price is genuinely missing. |
-
-### Late-arriving data
-
-Goldsky can deliver a log seconds-to-minutes after the block it came from. Two defences:
-
-- The real-time worker filters by **arrival order**, not block order: `WHERE processed_at IS NULL ORDER BY ingested_at_seq`. A late-arriving older block — Goldsky replays, partition catch-up, source-side correction — is processed whenever it lands, with no risk of being skipped because newer blocks have already advanced a block-height watermark past it. The idempotent UPSERT absorbs any double-delivery.
-- dbt-incremental refreshes use a **48-hour lookback window** (`WHERE block_time > (SELECT MAX(block_time) FROM {{ this }}) - INTERVAL '48 hours'`) so mart aggregations pick up late arrivals.
-
-If a log arrives more than 48h late (Goldsky catastrophic delay; nightly reconciliation has already run), the next nightly reconciliation re-derives from Dune and corrects it.
-
-### Schema evolution
-
-Three rules, in order:
-
-1. **All migrations are additive-first.** New column → add as `NULLABLE` → backfill in a separate job → enforce `NOT NULL` only after backfill completes. Never `ALTER COLUMN` or `DROP COLUMN` on a live table without a dual-write window.
-2. **The dual-write window for breaking changes is two full batch cycles** (typically 48h). Old reader + new reader must coexist; consumers migrate before the old column is dropped.
-3. **Non-additive migrations require a second reviewer** (enforced by the `requires-second-reviewer` label on PRs touching `migrations/` — see Part 2). Single-reviewer merges on `migrations/` are a P1 incident.
-
-A dropped or corrupted column is recovered from the most recent RDS Multi-AZ snapshot, **not** from a re-derive (snapshots preserve both structure and historical data; a re-derive only rebuilds what we can still pull from Dune).
-
-### Partial enrichment failure
-
-If the price join times out or returns partial data, decoded rows still land in `dex_pool_swaps` with `amount_usd = NULL` and `price_source = NULL`. They are **not** dropped and not blocked from downstream. The `backfill_prices` nightly job picks them up and fills them in. This separation matters: ingestion correctness and pricing correctness are different failure modes with different runbooks, and conflating them produces silent data loss.
-
-### What pages a human, and when
-
-| Severity | Condition | Page |
-|---|---|---|
-| **P0** | Dedup invariant violated (same PK has >1 row) | Immediate, 24/7 |
-| **P0** | Reconciliation drift > 5% vs Dune in any (project, hour) | Immediate, 24/7 |
-| **P1** | Real-time lag > 5 min for 10 min | Business hours + on-call |
-| **P1** | Null-price rate > 20% for any (hour, project) | Business hours + on-call |
-| **P2** | Batch DAG fails after retries | Next morning |
-| **P2** | Quarantine rate > 0.5% in any hour | Next morning |
-| **P3** | "Unknown project" alert (new factory > $1M daily) | Weekly triage |
-
-The discipline here is that **P0 is reserved for correctness failures, not freshness failures**. A lagging pipeline is annoying. A double-counted dashboard is a bad treasury decision.
+**Alerting severity:** P0 = correctness failures (dedup violated, drift > 5%); P1 = freshness failures (lag > 5min, null-price > 20%); P2 = operational (batch DAG failure, quarantine > 0.5%). A lagging pipeline is annoying. A double-counted dashboard is a bad treasury decision.
 
 ---
 
@@ -634,22 +552,7 @@ Each surface is a Cube model with the source metrics version-pinned. When Treasu
 
 ---
 
-## 7. Operational Workflows (what running this looks like)
-
-| Trigger | What happens | Who acts |
-|---|---|---|
-| Real-time pipeline lag > 5min | Pager; Python worker restarted automatically by systemd; if not recovered in 5min, escalate | On-call engineer |
-| Batch DAG fails on `ingest_dune` | Auto-retry 3x with exponential backoff; if still failing, page; runbook says "check Dune status page, then re-run window" | On-call |
-| Null-price rate > 20% | Pager; runbook points to checking price feed source; trade rows still landed, just with NULL `amount_usd` | On-call |
-| Reconciliation drift > 0.5% | Pager next morning, not 2 AM; analyst investigates the offending (project, hour) cell | DRI for the affected protocol |
-| New DEX deploys on Avalanche | "Unknown project" attention alert when unrecognized factory shows >$1M daily volume; engineer schedules decoder work | Whoever's on rotation for protocol coverage |
-| Decoder bug found | Increment `decoder_version`, ship fix, run targeted re-derive scoped to rows where `decoder_version < new_version` for the affected protocol/window | Engineer who shipped the fix |
-
-Every one of these has a runbook in `/runbooks/` (not part of this submission). The point of listing them is to show that the system is built around the work that operating it actually requires, not around the happy path.
-
----
-
-## 8. Cost ballpark
+## 7. Cost ballpark
 
 For the real-time path at current Avalanche volume:
 
@@ -665,16 +568,8 @@ For the real-time path at current Avalanche volume:
 
 Single-node Postgres handles current Avalanche DEX volume comfortably. Scale-up path to read replicas + partitioning is documented in `03_tradeoffs_and_next_steps.md`.
 
-### 8.1 Cost discipline — design choices that keep this number low
+### 7.1 Cost discipline
 
-Treasury engineering rewards cost-aware architecture, so the choices below are explicit:
+Three choices that keep this number low: (1) No Kafka/Flink at v1 — saves $1.5–3k/mo, trigger conditions for adding them are documented in `03_tradeoffs_and_next_steps.md`. (2) S3 as system of record + Postgres as serving layer — hot data (90 days) in Postgres, older partitions served from S3+Athena on demand, storage stays bounded. (3) Goldsky over self-hosted node — break-even on self-hosting is ~10x current Avalanche volume.
 
-- **No Kafka/Flink at v1.** Saves an estimated $1.5–3k/mo in managed-streaming infra (MSK + KDA, or Confluent Cloud) plus the ops time those tools demand. Documented trigger conditions for when we'd add them.
-- **S3 is the system of record; Postgres is a serving layer.** Hot data (last 90 days) lives in Postgres; older partitions get dropped from Postgres and re-served from S3 + Athena on demand. Postgres storage stays bounded; S3 Glacier-IR holds the long tail at ~$0.004/GB/month.
-- **Partition pruning.** Both S3 (Hive-style `dt=YYYY-MM-DD`) and Postgres (monthly partitions on `block_time`) are partitioned so date-bounded queries never scan the full table. A "last 24h capital flow" query touches one partition, not all of them.
-- **Idempotent re-runs avoid expensive recomputation.** Window replays only touch the affected partitions; decoder-scoped replays use `decoder_version` to rewrite only the affected rows. We never do a full-table rebuild for a bug fix.
-- **dbt-incremental, not dbt-full.** Hourly aggregations process only new rows. A full refresh exists as a recovery tool, not a daily operation.
-- **Goldsky over self-hosted node.** Self-hosting an Avalanche archive node costs ~$500–$2000/mo before the ops time to run it. Goldsky charges per-event in the same range with zero ops burden. The break-even on self-hosting is when event volume exceeds ~10x current Avalanche levels.
-- **Reserved-instance RDS** for the steady-state Postgres workload (~40% saving vs on-demand). MWAA and EC2 sized to the smallest tier that meets SLA; scaled up only when DQ checks show queue depth growing.
-
-Retention defaults: 90 days hot in Postgres, 18 months warm in S3 Standard, indefinite in S3 Glacier-IR. Tunable per-table by policy; the mart tables for capital flow have the longest retention because they're the smallest by row count.
+Retention: 90 days hot in Postgres, 18 months in S3 Standard, indefinite in S3 Glacier-IR.
