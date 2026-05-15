@@ -1,0 +1,7 @@
+requests>=2.31
+pandas>=2.2
+pyarrow>=15.0
+duckdb>=1.0
+eth-abi>=5.0
+eth-utils>=4.0
+python-dotenv>=1.0

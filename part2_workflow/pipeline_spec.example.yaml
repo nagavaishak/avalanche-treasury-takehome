@@ -1,0 +1,101 @@
+# pipeline_spec.yaml — the metadata contract consumed by PromoteIt.
+#
+# This is a real example for a hypothetical pipeline that computes hourly
+# validator-set churn on Avalanche P-Chain. The shape and field semantics
+# match what PromoteIt expects in production.
+
+apiVersion: promoteit/v1
+kind: Pipeline
+
+metadata:
+  name: validator_churn_hourly
+  owner: eric.lu@avalabs.org
+  oncall: treasury-data-pager      # PagerDuty service key
+  team: treasury
+  source_path: exploratory/eric/validator_churn/
+
+purpose: |
+  Compute hourly validator-set additions and departures on Avalanche P-Chain.
+  Inputs feed the validator-economics dashboard and the staking-incentives
+  research model. NOT used for any external-facing reporting.
+
+freshness:
+  sla: 1h                           # max permissible end-to-end lag
+  classification: batch             # batch | streaming | hybrid
+
+inputs:
+  - kind: dune_query
+    query_id: 4123456
+    refresh_minutes: 60
+    rationale: "Pre-existing curated query; reuse rather than re-implementing in raw SQL."
+
+  - kind: chain_rpc
+    chain: avalanche_p
+    endpoint_ref: secrets_manager:avax_p_rpc
+    rate_limit_per_sec: 10
+    rationale: "Resolve validator nodeIDs to current uptime; not in any analytics warehouse."
+
+outputs:
+  - kind: postgres_table
+    schema: treasury_marts
+    table: validator_churn_hourly
+    primary_key: [block_time_hour]
+    write_mode: upsert
+    retention_days: 365
+
+dependencies:
+  upstream_tables:
+    - dim_validators
+    - prices.usd
+  utilities:                        # explicit reuse declarations
+    - dune_client
+    - postgres_upsert
+    - secrets_manager
+    - logging_setup
+
+dq_checks:
+  - kind: freshness
+    threshold: 2h                   # alert if max(block_time_hour) > NOW() - 2h
+    severity: page
+
+  - kind: row_count_min
+    window: 24h
+    min_rows: 24                    # at least one row per hour
+    severity: page
+
+  - kind: schema_match
+    contract_ref: contracts/validator_churn_hourly.schema.json
+    severity: page
+
+  - kind: numeric_range
+    column: net_validator_change
+    min: -50
+    max: 50
+    window: 24h
+    severity: warn
+    rationale: "Sanity bound; one-hour net churn of >50 is unprecedented and warrants investigation."
+
+consumer_classifications:
+  - dashboards                      # surfaces in Superset, drives semantic-layer caching
+  # - api                           # uncomment when external API consumers exist
+  # - board_report                  # uncomment when surfaced to leadership
+
+ai_review_required: true            # forces single-reviewer minimum on the PR
+
+deploy_target: mwaa                 # mwaa | ecs | lambda
+runtime: python3.11
+resource_class: small               # small | medium | large
+schedule_cron: "5 * * * *"          # 5 minutes past every hour
+retries:
+  max: 3
+  backoff_seconds: [60, 300, 900]
+
+cost_baseline:
+  monthly_usd_max: 30
+  rationale: "Tiny pipeline; alert finance reviewer if any change pushes baseline above $50/mo."
+
+audit:
+  promoted_from_commit: null        # set by promoteit on PR open
+  promoted_by: null                 # set by promoteit
+  template_version: null            # set by promoteit
+  decoder_version: null             # N/A for this pipeline class
