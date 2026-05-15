@@ -1,20 +1,20 @@
 # 02 — Part 2: AI-Assisted Productionization Workflow
 
-## The problem, restated honestly
+## The problem
 
-A small high-ownership team will, in practice, write a lot of one-off pipelines. An analyst writes a notebook that pulls validator-set churn. An economist writes a Python script that scrapes incentive-emissions data from a contract. Most of these stay one-off forever. A meaningful fraction (maybe 1 in 5) turns out to be load-bearing, and someone has to "productionize" it — wrap it in scheduling, tests, alerts, error handling, code-style conformance, observability, and put it in version control with the rest of the platform.
+A small team writes a lot of one-off pipelines. An analyst writes a notebook for validator-set churn. An economist writes a script that scrapes incentive-emissions data. Most stay one-off. About 1 in 5 turns out to be valuable enough to productionize — wrap in scheduling, tests, alerts, error handling, code-style conformance, observability, and put in version control.
 
-Productionization is mostly **mechanical translation** of an exploratory pipeline into a conforming production scaffold. It is a near-perfect AI use case: bounded, repeatable, and amenable to template-driven generation. It is also a place where AI can silently introduce bugs that take weeks to surface, so the design must make AI helpful **and** loud about its limits.
+Productionization is mostly **mechanical translation** of exploratory code into a conforming production scaffold. It's a good AI use case: bounded, repeatable, template-driven. It's also a place where AI can quietly introduce bugs that take weeks to surface, so the design has to make AI helpful and loud about its limits.
 
-The system I'm proposing is called **PromoteIt**. It takes a `pipeline_spec.yaml` + a directory of exploratory code, and emits a PR containing the production-ready pipeline that conforms to the platform's standards. The PR is the artifact a human reviews and merges.
+The system is called **PromoteIt**. It takes a `pipeline_spec.yaml` plus a directory of exploratory code, and emits a PR with the production-ready pipeline that conforms to the platform's standards. The PR is what a human reviews and merges.
 
 ---
 
 ## 1. Developer Workflow
 
-### 1.1 Day-zero — writing the dev pipeline (no AI involvement yet)
+### 1.1 Day-zero — writing the dev pipeline
 
-The developer writes a Jupyter notebook or a flat Python script in `/exploratory/<author>/<topic>/`. There is no enforced structure here on purpose — exploratory code is supposed to be ugly. The only ask: name your dataframes meaningfully and keep IO and logic in different cells/functions.
+The developer writes a Jupyter notebook or Python script in `/exploratory/<author>/<topic>/`. No enforced structure — exploratory code is supposed to be messy. The only ask: name dataframes meaningfully and keep IO and logic in separate functions.
 
 ### 1.2 Day-N — deciding to promote
 
@@ -24,9 +24,9 @@ When the pipeline proves valuable, the author runs:
 promoteit init exploratory/eric/validator_churn/
 ```
 
-This walks the exploratory directory and produces a **draft `pipeline_spec.yaml`** by inspecting the code (imports, function calls, IO calls, return types). The author then fills in the metadata the system can't infer — primarily intent, ownership, SLA, and consumption pattern. This is the **metadata contract**.
+This walks the exploratory directory and produces a draft `pipeline_spec.yaml` by inspecting the code (imports, function calls, IO calls, return types). The author then fills in the metadata the system can't infer — intent, ownership, SLA, consumption pattern.
 
-A real `pipeline_spec.yaml` example is in `/part2_workflow/pipeline_spec.example.yaml`. Highlights:
+A full `pipeline_spec.yaml` example is in `/part2_workflow/pipeline_spec.example.yaml`. Highlights:
 
 ```yaml
 name: validator_churn_hourly
@@ -100,47 +100,46 @@ This is the one button the developer presses. Under the hood, the system:
 
 ### 1.4 The PR is the human checkpoint
 
-The developer (and a second reviewer for high-risk classes) reads the PR. Everything is mechanical and reviewable. Comments are inline. Merging gates on:
+The developer (and a second reviewer for high-risk files) reads the PR. Everything is mechanical and reviewable. Merging requires:
 
 - All generated tests pass in CI
-- A second reviewer's approval if any flagged "high-risk" file changed (see §4)
-- A "human acknowledgment" box ticked on the PR template
+- Second-reviewer approval if any high-risk file changed (see §4)
+- "Human acknowledgment" box ticked on the PR template
 
-CI deploys to staging on merge. Promotion to prod requires a separate approved promotion PR. The same `promoteit` tool tracks promotion state.
+CI deploys to staging on merge. Promotion to prod is a separate approved PR. The same `promoteit` tool tracks promotion state.
 
 ---
 
 ## 2. Role of AI — specifically
 
-The assignment explicitly asks for specifics over hand-waving. Here are the exact tasks AI does, and a parallel list of tasks it does **not** do.
+The assignment asks for specifics, not "AI writes code faster." Here are the exact tasks AI does, and what it does not.
 
 ### 2.1 What AI does
 
-| Task | Why AI is well-suited | Failure mode |
+| Task | Why AI works here | Failure mode |
 |---|---|---|
-| **Map exploratory code to template scaffold** | The mapping is fuzzy: function `fetch_dune_data()` in the notebook becomes the `ingest` task in the DAG. AI is good at pattern-matching the intent and refactoring accordingly. | AI mis-identifies a side-effecting function as pure |
-| **Suggest reuse of shared utilities** | The platform has a registry of approved utility modules (`utilities/dune_client.py`, `utilities/postgres_upsert.py`, `utilities/secrets_manager.py`). AI semantically matches functions in the exploratory code to utilities and rewrites imports. | AI suggests a utility that's *similar* but not equivalent |
-| **Generate the Airflow DAG from the template + spec** | Highly mechanical. Templates are Jinja2; AI fills in task names, dependencies, schedule, retry behavior from the spec. | Low — this is essentially deterministic |
-| **Generate unit test scaffolding** | AI reads function signatures and example inputs in the exploratory code and writes one happy-path test and one TODO test per function. | AI generates a test that asserts the buggy behavior (because the test was written from the buggy code) |
-| **Generate DQ-check SQL** | The `dq_checks` block in the spec maps mechanically to SQL templates; AI fills in table/column names from the schema contract. | Low if templates are tight |
-| **Suggest docstrings and inline comments** | Pure rewriting. AI generates a one-line docstring per function, a top-of-file purpose comment, and a CHANGELOG line. | Verbosity creep |
-| **Lint and style fixes** | Run `ruff`, `black`, `mypy`. AI fixes most type errors and formatting violations. | Type-erasure (`# type: ignore` sprinkling) |
-| **Generate the PR description** | Structured: "what I did / what I skipped / where human review matters." Pure template. | Low |
-| **Suggest existing tests to reuse** | If the spec says `reuses_utilities: dune_client`, AI suggests adding new tests under `tests/dune_client/test_validator_churn_query.py` rather than fresh test file. | Low |
+| **Map exploratory code to template** | `fetch_dune_data()` in the notebook becomes the `ingest` task in the DAG. AI is good at this pattern-matching. | Mis-identifies a side-effecting function as pure |
+| **Suggest shared utility reuse** | Platform has approved utilities (`dune_client`, `postgres_upsert`, `secrets_manager`). AI matches functions in exploratory code to utilities and rewrites imports. | Suggests a utility that's similar but not equivalent |
+| **Generate the Airflow DAG** | Highly mechanical. Templates are Jinja2; AI fills in task names, schedule, retry behavior from the spec. | Low |
+| **Generate unit test scaffolding** | AI reads function signatures and example inputs, writes one happy-path test and one TODO test per function. | Test asserts buggy behavior (written from buggy code) |
+| **Generate DQ-check SQL** | `dq_checks` block in the spec maps to SQL templates; AI fills in table/column names. | Low if templates are tight |
+| **Docstrings and comments** | Pure rewriting. One-line docstring per function, top-of-file purpose comment. | Verbosity creep |
+| **Lint and style fixes** | Runs `ruff`, `black`, `mypy`. AI fixes most type errors and formatting. | `# type: ignore` sprinkling |
+| **PR description** | Structured: "what I did / what I skipped / where human review matters." | Low |
 
-### 2.2 What AI does *not* do (the "do not trust without human review" list)
+### 2.2 What AI does NOT do
 
-| Task | Why AI must not | What we do instead |
+| Task | Why AI shouldn't | What we do instead |
 |---|---|---|
-| **Choose the SLA, ownership, or oncall** | These are organizational facts, not derivable from code | Author fills in `pipeline_spec.yaml` by hand; tool errors if blank |
-| **Choose what the metric *means*** | "Capital flow" can mean five different things; AI guessing the intent will produce a plausible-looking pipeline measuring the wrong quantity | Spec includes a `purpose:` block reviewed in PR |
-| **Write the DQ-check thresholds** | "Alert when null-price > 20%" is a business decision informed by historical noise. AI estimating from notebook output is risky. | Author sets thresholds in spec; AI fills the SQL skeleton |
-| **Approve the PR** | Trivial guardrail | Second-engineer review for high-risk classes |
-| **Promote staging → prod** | Two-key turn | Separate human-initiated `promoteit ship` command |
-| **Modify shared utilities** | A change to `utilities/dune_client.py` impacts every pipeline; AI cannot vouch for cross-pipeline consequences | Tool refuses to edit `/utilities/`; emits a TODO comment instead and the author opens a separate PR |
-| **Decide between batch and real-time** | Architectural choice with cost and ops implications | Spec specifies; AI cannot override |
-| **Touch credentials or secrets** | Obvious | Code analysis is read-only on secret references; secrets are pulled at runtime via Secrets Manager, never inlined |
-| **Generate the *correctness* assertions** | The TODO tests are placeholders — AI does not assert correctness for novel logic | Human writes the assertions; AI only writes the scaffolding around them |
+| **Choose SLA, ownership, oncall** | Organizational facts, not derivable from code | Author fills in `pipeline_spec.yaml`; tool errors if blank |
+| **Choose what the metric *means*** | "Capital flow" can mean five things; AI guessing intent produces a plausible pipeline measuring the wrong thing | Spec includes a `purpose:` block reviewed in PR |
+| **Write DQ-check thresholds** | "Alert when null-price > 20%" is a business decision from historical noise. AI estimating from notebook output is risky. | Author sets thresholds; AI fills the SQL skeleton |
+| **Approve the PR** | Obvious guardrail | Second-engineer review for high-risk classes |
+| **Promote staging → prod** | Two-step gate by design | Separate human-initiated `promoteit ship` command |
+| **Modify shared utilities** | A change to `dune_client.py` impacts every pipeline; AI can't vouch for cross-pipeline consequences | Tool refuses to edit `/utilities/`; author opens a separate PR |
+| **Decide batch vs real-time** | Architectural choice with cost and ops implications | Spec specifies; AI cannot override |
+| **Touch credentials or secrets** | Obvious | Code analysis is read-only on secret references; secrets pulled at runtime via Secrets Manager |
+| **Generate correctness assertions** | TODO tests are placeholders; AI cannot assert correctness for novel logic | Human writes the assertions; AI writes the scaffolding |
 
 ### 2.3 The "high-risk file changed" rule
 
@@ -242,7 +241,7 @@ Final step. The system commits to a branch, opens a PR via `gh`, attaches a stru
 - The `purpose:` block in the spec for accuracy
 ```
 
-This kind of structured PR is the single most important UX choice: a reviewer can answer "is this correct?" in 10 minutes instead of 2 hours.
+A reviewer can answer "is this correct?" in 10 minutes instead of 2 hours because the PR makes its own boundaries explicit.
 
 ---
 
@@ -263,9 +262,9 @@ In one place, listed:
 
 ## 5. Evaluation and Success Metrics
 
-We are claiming this system saves the team meaningful engineering time. The claim has to be measurable.
+The system claims to save engineering time. The claim has to be measurable.
 
-### 5.1 Outcome metrics (what we report quarterly)
+### 5.1 Outcome metrics (reported quarterly)
 
 | Metric | Target | How measured |
 |---|---|---|
@@ -285,22 +284,9 @@ We are claiming this system saves the team meaningful engineering time. The clai
 | Template version mismatch | Catches the "I'm running an old template" footgun |
 | Utility-match precision / recall | Tracked manually on a 10-PR audit each quarter |
 
-### 5.3 The leading indicators
+### 5.3 Leading indicators of trouble
 
-The two leading indicators of trouble:
+- Rising `% of generated tests merged with non-trivial human edits` — test scaffolding is degrading; fix the test prompt or templates.
+- Rising `% of pipelines failing within 7 days` — templates or DQ-check defaults are out of date; review failing pipelines and update.
 
-- Rising `% of generated tests merged with non-trivial human edits` — means the test scaffolding is degrading and developers are working around it. Fix by improving the test prompt or the templates.
-- Rising `% of pipelines failing within 7 days` — means the templates or DQ-check defaults are out of date for current production reality. Fix by reviewing the failing pipelines and updating templates.
-
-Both are tracked on a small internal dashboard. The dashboard is itself produced by `promoteit` to dogfood the system.
-
----
-
-## 6. What this is not
-
-To be explicit, because the assignment asks for opinionated design:
-
-- **Not a full agent.** No autonomous task loops, no AI tools that touch production, no LLM-driven runtime decisions. The LLM is invoked at code-generation time only, behind a human-approved PR gate.
-- **Not a no-code platform.** The output is plain Python + dbt + Airflow that a human can read, modify, and own forever. The system gets out of the way after the PR is merged.
-- **Not a one-shot.** The same `promoteit` tool is used for ongoing maintenance: re-running it after a major spec change re-renders the scaffold and produces a diff PR.
-- **Not married to a specific LLM.** The model is named in config, pinned, and replaceable. Templates and the utility registry do most of the heavy lifting; the LLM is a thin orchestration layer.
+Both tracked on a dashboard produced by `promoteit` itself.
