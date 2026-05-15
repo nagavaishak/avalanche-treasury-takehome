@@ -70,15 +70,4 @@ EXAMPLES OF GOOD JUDGMENT:
   unmapped_functions, warning: "non-pipeline side effect; please review."
 ```
 
-## Why this prompt shape
-
-- **Strict JSON output**, parsed with a JSON schema. No room for the LLM to drift into prose.
-- **"Unknown" is a first-class outcome**, not a fallback. This is the single most important property of an AI-assisted system at this trust level — the LLM is allowed to refuse.
-- **Explicit rules** that encode platform invariants (no promoting module entry points; template/spec consistency; side-effect tasks vs. pure helpers). These are not negotiable, and they're in the prompt rather than in post-processing because the LLM can reason about them directly.
-- **Confidence ladder** matches the `derivation_confidence` field on `dex_user_trades` — it's the same idea: surface uncertainty to the human reviewer; never hide it.
-
-## What to monitor
-
-- **Rate of `mapping="unknown"`** — rising means the templates are out of date relative to what people are actually writing in `/exploratory/`.
-- **Rate of human-rejected mappings** — tracked per quarter; rising means the prompt or the embedding-based candidate generation needs tightening.
-- **Rate of `template/spec mismatch` warnings** — should be near zero; non-zero indicates spec validation is missing a check.
+**Key design points:** strict JSON output (no prose drift), `"unknown"` is a first-class outcome (the LLM is allowed to refuse), explicit rules encoded in the prompt (platform invariants the LLM can reason about directly), confidence ladder matches `derivation_confidence` on `dex_user_trades` (same idea — surface uncertainty, never hide it).

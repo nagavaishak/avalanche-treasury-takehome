@@ -60,17 +60,6 @@ The human reviewer will read your reason field in PR review. Write it so a
 colleague can verify your judgment in 30 seconds.
 ```
 
-## Notes on this design
+**Key design points:** LLM never edits utilities (only chooses among existing); default is reject (no reuse is fine, wrong reuse is a silent bug); rules are ordered (rule 2 catches the most common false-accept class first); staleness is encoded (stale utilities filtered automatically).
 
-- **The LLM never edits utilities.** It only chooses among existing ones and writes a one-call rewrite. New utility code is a separate, governed PR.
-- **The default is reject.** A pipeline with no utility reuse is fine. A pipeline with one wrong utility match is a silent data-quality bug.
-- **The rules are ordered.** This matters: rule 2 (different downstream system) catches the most common false-accept class, so it appears early.
-- **Staleness is encoded.** If the utility registry has rotting modules, the LLM filters them out automatically — manual cleanup is no longer the only mechanism.
-
-## Where this prompt fits in the loop
-
-After this step runs:
-
-1. The PR description includes every `accept` decision in a "Utility reuse" section.
-2. Any `medium` or `low` confidence accepts are highlighted in the "Where I am uncertain" block of the PR description.
-3. Reviewers see the `reason` field inline and can verify or override.
+After this step: PR description includes every `accept` decision; `medium`/`low` confidence accepts go in the "Where I am uncertain" block; reviewers see the `reason` field inline.
